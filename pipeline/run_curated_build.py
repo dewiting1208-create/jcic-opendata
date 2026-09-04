@@ -141,8 +141,18 @@ def build_revolving_creditcard(raw_dir):
 
 
 def build_cbc_mortgage_repair(cbc_json_path):
-    """讀 fetch_cbc.py 抓回來的央行 EF99M01 原始 JSON，取出「房屋修繕貸款」
-    （index 5：原始值，index 6：年增率）。JSON 格式見 fetch_cbc.py 的說明。
+    """讀 fetch_cbc.py 抓回來的央行 EF99M01 原始 JSON，取出「房屋修繕貸款」。
+
+    實際格式（2026-09-04 用內建瀏覽器直接呼叫 API 確認過）：
+      {"meta": {...}, "data": {"dataSets": [
+        ["1988M07", v0,yoy0, v1,yoy1, v2,yoy2, ..., v7,yoy7],
+        ...
+      ]}}
+    每一列第一個元素是「YYYYMmm」格式的月份字串，後面 16 個值是 8 個類別各自
+    的（原始值, 年增率）成對出現，順序固定是：0=消費者貸款小計、1=購置住宅貸款、
+    2=房屋修繕貸款、3=汽車貸款、4=機關團體職工福利貸款、5=其他個人消費性貸款、
+    6=信用卡循環信用餘額、7=建築貸款。只取類別 index 2（房屋修繕貸款），也就是
+    values[4]＝原始值、values[5]＝年增率。沒有資料的儲存格是字串 "-"。
 
     這個來源不是 JCIC，抓取機制比較不穩定（見 claude/資料集篩選決定.md「跨機關
     資料來源」一節），所以這裡故意寫得保守：解析失敗就回傳 None、印警告，讓
@@ -150,18 +160,29 @@ def build_cbc_mortgage_repair(cbc_json_path):
     房屋修繕貸款資料消失或整個管線失敗。"""
     if not cbc_json_path or not cbc_json_path.exists():
         return None
+    HOUSING_REPAIR_IDX = 2  # 房屋修繕貸款在 8 個類別裡的順序（0-indexed）
     try:
         with open(cbc_json_path, encoding="utf-8") as f:
             data = json.load(f)
+        rows = data["data"]["dataSets"]
         records = []
-        for row in data["records"]:
-            date_str = row["date"]
-            val = row["values"][5]
-            yoy = row["values"][6]
-            if val is not None:
-                records.append({"date": date_str, "metric": "房屋修繕貸款餘額", "value": val, "unit": "百萬元"})
-            if yoy is not None:
-                records.append({"date": date_str, "metric": "年增率", "value": yoy, "unit": "%"})
+        for row in rows:
+            period = row[0]  # 例如 "1988M07"
+            m = re.match(r"^(\d{4})M(\d{2})$", period)
+            if not m:
+                continue
+            date_str = f"{m.group(1)}-{m.group(2)}"
+            values = row[1:]
+            vi = HOUSING_REPAIR_IDX * 2
+            if vi + 1 >= len(values):
+                continue
+            raw_val, raw_yoy = values[vi], values[vi + 1]
+            if raw_val not in (None, "-", ""):
+                records.append({"date": date_str, "metric": "房屋修繕貸款餘額",
+                                 "value": float(str(raw_val).replace(",", "")), "unit": "百萬元"})
+            if raw_yoy not in (None, "-", ""):
+                records.append({"date": date_str, "metric": "年增率",
+                                 "value": float(str(raw_yoy).replace(",", "")), "unit": "%"})
         if not records:
             raise ValueError("解析出 0 筆資料，可能是央行 API 回傳格式變了")
         return records
