@@ -1,0 +1,84 @@
+name: 更新 JCIC 資料並部署網站
+
+on:
+  schedule:
+    # 每週一 UTC 00:00（台灣時間週一早上 8 點）檢查一次；JCIC 資料本身大約每季
+    # （3、6、9、12月下旬）才會真的更新，用週檢查頻率確保新一季資料出來後最多等
+    # 一週就會反映，成本很低（沒變化就不會 commit，也不會觸發重新部署）。
+    - cron: "0 0 * * 1"
+  workflow_dispatch: {}   # 讓你可以在 GitHub 網頁上手動按「Run workflow」立刻更新一次
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安裝套件
+        run: pip install requests
+
+      - name: 下載最新的 JCIC 原始 CSV
+        run: python3 pipeline/fetch_raw.py data/raw
+
+      - name: 抓央行房屋修繕貸款資料（失敗不擋整個流程）
+        continue-on-error: true
+        run: python3 pipeline/fetch_cbc.py cbc_ef99m01_raw.json
+
+      - name: 重建精選版網站資料
+        run: |
+          python3 pipeline/run_curated_build.py \
+            --raw-dir data/raw \
+            --out-dir web/data \
+            --cbc-json cbc_ef99m01_raw.json \
+            --meta pipeline/static_meta.json
+
+      - name: 檢查資料有沒有變化
+        id: diff
+        run: |
+          if git diff --quiet -- web/data; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "資料沒有變化，不需要 commit"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "資料有變化，準備 commit"
+          fi
+
+      - name: Commit 新資料
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add web/data
+          git commit -m "自動更新 JCIC / 央行資料（$(date -u +%Y-%m-%d)）"
+          git push
+
+      - name: 上傳 Pages 用的網站檔案
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    needs: update-data
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 部署到 GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
