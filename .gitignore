@@ -6,3 +6,4 @@ cbc_ef99m01_raw.json
 .DS_Store
 __pycache__/
 *.pyc
+web/data/index.js.bak_before_descriptions
